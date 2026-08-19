@@ -1,0 +1,96 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+  schedule:
+    - cron: "0 0 * * 0"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref || github.run_id }}
+  cancel-in-progress: true
+
+env:
+  REGISTRY: ghcr.io/${{ github.repository_owner }}
+  TAG: latest
+
+jobs:
+  discover:
+    runs-on: ubuntu-slim
+    outputs:
+      images: ${{ steps.discover.outputs.images }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: discover
+        run: |
+          echo "images=$(printf '%s\n' */Dockerfile | cut -d/ -f1 | jq -Rnc '[inputs]')" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: discover
+    runs-on: ${{ matrix.platform.runner }}
+    strategy:
+      matrix:
+        image: ${{ fromJSON(needs.discover.outputs.images) }}
+        platform:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Prepare environment
+        id: vars
+        run: |
+          echo "image=${REGISTRY,,}/${{ matrix.image }}:${TAG,,}" >> "$GITHUB_OUTPUT"
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v7
+        with:
+          push: true
+          context: ${{ matrix.image }}
+          tags: ${{ steps.vars.outputs.image }}-${{ matrix.platform.arch }}
+
+  merge:
+    needs: [discover, build]
+    runs-on: ubuntu-slim
+    strategy:
+      matrix:
+        image: ${{ fromJSON(needs.discover.outputs.images) }}
+
+    permissions:
+      packages: write
+
+    steps:
+      - name: Prepare environment
+        id: vars
+        run: |
+          echo "image=${REGISTRY,,}/${{ matrix.image }}:${TAG,,}" >> "$GITHUB_OUTPUT"
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create and push multi-arch manifest
+        run: |
+          docker buildx imagetools create \
+            -t "${{ steps.vars.outputs.image }}" \
+            "${{ steps.vars.outputs.image }}-amd64" \
+            "${{ steps.vars.outputs.image }}-arm64"
