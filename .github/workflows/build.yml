@@ -63,6 +63,7 @@ jobs:
         with:
           push: true
           context: ${{ matrix.image }}
+          platforms: linux/${{ matrix.platform.arch }}
           tags: ${{ steps.vars.outputs.image }}-${{ matrix.platform.arch }}
 
   merge:
